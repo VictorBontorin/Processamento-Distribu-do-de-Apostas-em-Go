@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS wager_transactions_single_reversal_uq;
