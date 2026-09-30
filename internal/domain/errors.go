@@ -34,7 +34,7 @@ const (
 	CodeReferenceNotProcessed     FailureCode = "REFERENCE_NOT_PROCESSED"
 	CodeDuplicateReversal         FailureCode = "DUPLICATE_REVERSAL"
 	CodeIdempotencyConflict       FailureCode = "IDEMPOTENCY_CONFLICT"
-	CodeInvalidReversal FailureCode = "INVALID_REVERSAL"
+	CodeInvalidReversal           FailureCode = "INVALID_REVERSAL"
 )
 
 // RejectionError representa uma rejeição de negócio classificável.

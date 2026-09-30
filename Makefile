@@ -1,10 +1,21 @@
-.PHONY: up down fmt vet test test-race integration integration-short
+.PHONY: up down run migrate migrate-down fmt vet test test-race integration integration-short
 
 up:
 	docker compose up -d postgres localstack keycloak
 
 down:
 	docker compose down -v
+
+# Sobe tudo (API inclusa).
+run:
+	docker compose up --build
+
+# Aplica as migrations pendentes / reverte as N últimas (N=1 por padrão).
+migrate:
+	docker compose run --rm migrate
+
+migrate-down:
+	docker compose run --rm migrate sh /scripts/migrate.sh down $(or $(N),1)
 
 fmt:
 	gofmt -l -w .

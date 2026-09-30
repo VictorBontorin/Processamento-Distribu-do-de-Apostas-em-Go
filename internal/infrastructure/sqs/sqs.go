@@ -12,8 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
-const (
-)
+const ()
 
 type Client struct {
 	sqs           *sqs.Client

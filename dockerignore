@@ -1,0 +1,6 @@
+.git
+.env
+*.md
+test/
+keycloak/
+localstack/

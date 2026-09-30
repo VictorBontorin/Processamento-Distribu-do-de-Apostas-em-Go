@@ -83,7 +83,7 @@ func New(cfg Config) (auth.TokenVerifier, error) {
 		err      error
 	)
 
-	for attempt := 1; attempt <= 30; attempt++ {
+	for attempt := 1; attempt <= 60; attempt++ {
 		provider, err = oidc.NewProvider(ctx, discovery)
 		if err == nil {
 			break

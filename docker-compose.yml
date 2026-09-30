@@ -1,7 +1,6 @@
 services:
   postgres:
     image: postgres:16
-    container_name: wager-postgres
     environment:
       POSTGRES_DB: wager
       POSTGRES_USER: wager
@@ -10,11 +9,32 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wager -d wager"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # Aplica as migrations versionadas (scripts/migrate.sh) e termina.
+  migrate:
+    image: postgres:16
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: wager
+      DB_PASSWORD: wager
+      DB_NAME: wager
+      MIGRATIONS_DIR: /migrations
+    volumes:
+      - ./migrations:/migrations:ro
+      - ./scripts:/scripts:ro
+    command: ["sh", "/scripts/migrate.sh", "up"]
 
   localstack:
     image: localstack/localstack:3.8
-    container_name: wager-localstack
     environment:
       SERVICES: sqs
     ports:
@@ -25,22 +45,53 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/init/ready"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 30
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
-    container_name: wager-keycloak
     command: ["start-dev", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_HTTP_ENABLED: "true"
+      # Emissor dos tokens: sempre http://localhost:8081, também para os
+      # containers (que buscam o JWKS em http://keycloak:8080).
       KC_HOSTNAME: http://localhost:8081
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
     ports:
       - "8081:8080"
     volumes:
       - ./keycloak/realm-wager.json:/opt/keycloak/data/import/realm-wager.json:ro
+
+  # A API é stateless: escale com `docker compose up --scale app=3`.
+  app:
+    build: .
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    environment:
+      HTTP_ADDR: ":8080"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: wager
+      DB_PASSWORD: wager
+      DB_NAME: wager
+      SQS_ENDPOINT: http://localstack:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AUTH_ISSUER_URL: http://localhost:8081/realms/wager
+      AUTH_DISCOVERY_URL: http://keycloak:8080/realms/wager
+      AUTH_AUDIENCE: wager-api
+      PENDING_REFERENCE_TTL: 5m
+      LOG_LEVEL: info
+    ports:
+      - "8080-8089:8080"
+    restart: on-failure
 
 volumes:
   postgres_data:

@@ -24,8 +24,8 @@ type WagerTransactionRepository interface {
 	Save(ctx context.Context, tx *domain.WagerTransaction) error
 
 	GetByReferenceExternalID(
-	ctx context.Context,
-	providerID string,
-	referenceExternalID string,
-) (*domain.WagerTransaction, error)
+		ctx context.Context,
+		providerID string,
+		referenceExternalID string,
+	) (*domain.WagerTransaction, error)
 }

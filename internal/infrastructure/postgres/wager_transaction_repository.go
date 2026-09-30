@@ -332,8 +332,8 @@ func (r *WagerTransactionRepository) GetResultSnapshot(
 	`
 
 	var (
-		balance   *int64
-		currency  *string
+		balance  *int64
+		currency *string
 	)
 
 	err := r.pool.QueryRow(
