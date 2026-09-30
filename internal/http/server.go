@@ -3,11 +3,13 @@ package http
 import (
 	"context"
 	"net/http"
+	"os"
 
 	"go.uber.org/fx"
 
 	"wager/internal/auth"
 	"wager/internal/correlation"
+	"wager/internal/metrics"
 )
 
 type Server struct {
@@ -60,6 +62,7 @@ func NewServer(
 	mux.Handle("POST /wallets/{walletId}/reconciliation", internal(read.Reconcile))
 
 	// Público.
+	mux.Handle("GET /metrics", metrics.Handler())
 	mux.HandleFunc("GET /health/live", health.Live)
 	mux.HandleFunc("GET /health/ready", health.Ready)
 
@@ -67,8 +70,8 @@ func NewServer(
 		wallets: wallets,
 		wager:   wager,
 		server: &http.Server{
-			Addr:    ":8080",
-			Handler: correlation.Middleware(mux),
+			Addr:    httpAddr(),
+			Handler: correlation.Middleware(observe(mux)),
 		},
 	}
 
@@ -89,4 +92,13 @@ func NewServer(
 	})
 
 	return server
+}
+
+// httpAddr lê o endereço de escuta de HTTP_ADDR (padrão :8080).
+func httpAddr() string {
+	if addr := os.Getenv("HTTP_ADDR"); addr != "" {
+		return addr
+	}
+
+	return ":8080"
 }

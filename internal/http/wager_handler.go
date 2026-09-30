@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"wager/internal/auth"
 	"wager/internal/domain"
 	"wager/internal/infrastructure/postgres"
+	"wager/internal/logging"
 )
 
 type WagerHandler struct {
@@ -208,8 +210,14 @@ func (h *WagerHandler) Create(
 		return
 	}
 
-	result, err := h.store.ProcessExternal(
+	ctx := logging.WithAttrs(
 		r.Context(),
+		"providerId", principal.ProviderID,
+		"externalTransactionId", tx.ExternalTransactionID(),
+	)
+
+	result, err := h.store.ProcessExternal(
+		ctx,
 		tx,
 		time.Now().UTC(),
 	)
@@ -233,6 +241,7 @@ func (h *WagerHandler) Create(
 
 		case isTransient(err):
 			// Nada foi confirmado: repetir com a mesma Idempotency-Key.
+			slog.WarnContext(ctx, "transient failure processing transaction", "error", err)
 			w.Header().Set("Retry-After", "1")
 			writeJSONErrorCode(
 				w,
@@ -242,6 +251,7 @@ func (h *WagerHandler) Create(
 			)
 
 		default:
+			slog.ErrorContext(ctx, "could not process transaction", "error", err)
 			writeJSONError(
 				w,
 				http.StatusInternalServerError,

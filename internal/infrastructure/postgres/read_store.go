@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"wager/internal/domain"
+	"wager/internal/metrics"
 )
 
 var (
@@ -241,12 +242,12 @@ func (s *ReadStore) queryTransaction(
 	args ...any,
 ) (TransactionView, error) {
 	var (
-		v                                                   TransactionView
+		v                                                  TransactionView
 		provider, external, round, game, refExt, refID, fc *string
-		amount                                              int64
-		currency                                            string
-		resultBalance                                       *int64
-		resultCurrency                                      *string
+		amount                                             int64
+		currency                                           string
+		resultBalance                                      *int64
+		resultCurrency                                     *string
 	)
 
 	err := s.pool.QueryRow(ctx, transactionViewSelect+where, args...).Scan(
@@ -425,7 +426,11 @@ func (s *ReadStore) Reconcile(
 		CheckedEntries:    count,
 	}
 
+	metrics.ReconciliationRuns.Inc()
+
 	if !result.Consistent {
+		metrics.ReconciliationDivergences.Inc()
+
 		slog.ErrorContext(
 			ctx,
 			"wallet reconciliation divergence",

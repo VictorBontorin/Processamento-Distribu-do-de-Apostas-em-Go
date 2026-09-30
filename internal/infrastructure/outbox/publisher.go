@@ -4,17 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"time"
 
+	"wager/internal/fault"
 	"wager/internal/infrastructure/postgres"
 	"wager/internal/infrastructure/sqs"
+	"wager/internal/metrics"
 )
 
 type EventEnvelope struct {
 	EventID       string          `json:"eventId"`
-	Type          string          `json:"type"`
+	Type          string          `json:"eventType"`
 	AggregateID   string          `json:"aggregateId"`
 	CorrelationID string          `json:"correlationId,omitempty"`
 	CausationID   string          `json:"causationId,omitempty"`
@@ -59,11 +62,25 @@ func (p *Publisher) Start(ctx context.Context) {
 		defer ticker.Stop()
 
 		for {
-			if err := p.publishOne(ctx); err != nil {
-				// O retry fica persistido no PostgreSQL.
-				// O worker continua processando outros eventos.
-				_ = err
+			// Drena os eventos disponíveis antes de dormir.
+			for {
+				published, err := p.publishOne(ctx)
+				if err != nil {
+					// O retry fica persistido no PostgreSQL.
+					// O worker continua processando outros eventos.
+					if ctx.Err() == nil {
+						slog.ErrorContext(ctx, "outbox publish cycle failed", "error", err)
+					}
+
+					break
+				}
+
+				if !published || ctx.Err() != nil {
+					break
+				}
 			}
+
+			p.updateLag(ctx)
 
 			select {
 			case <-ctx.Done():
@@ -94,14 +111,14 @@ func (p *Publisher) Stop(ctx context.Context) error {
 	}
 }
 
-func (p *Publisher) publishOne(ctx context.Context) error {
+func (p *Publisher) publishOne(ctx context.Context) (bool, error) {
 	event, err := p.repository.ClaimNext(ctx, p.lease)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if event == nil {
-		return nil
+		return false, nil
 	}
 
 	envelope := EventEnvelope{
@@ -123,7 +140,7 @@ func (p *Publisher) publishOne(ctx context.Context) error {
 
 	body, err := json.Marshal(envelope)
 	if err != nil {
-		return p.retry(ctx, event, fmt.Errorf("marshal event envelope: %w", err))
+		return false, p.retry(ctx, event, fmt.Errorf("marshal event envelope: %w", err))
 	}
 
 	err = p.sqs.SendEvent(
@@ -133,14 +150,36 @@ func (p *Publisher) publishOne(ctx context.Context) error {
 		event.ID.String(),
 	)
 	if err != nil {
-		return p.retry(ctx, event, err)
+		return false, p.retry(ctx, event, err)
 	}
+
+	// Ponto de injeção de falha dos testes: evento publicado, ainda não
+	// marcado como publicado na outbox.
+	fault.ExitIf("outbox_after_publish")
 
 	if err := p.repository.MarkPublished(ctx, event.ID); err != nil {
-		return err
+		return false, err
 	}
 
-	return nil
+	metrics.OutboxPublishedTotal.Inc()
+	slog.DebugContext(
+		ctx,
+		"outbox event published",
+		"eventId", event.ID.String(),
+		"eventType", event.EventType,
+	)
+
+	return true, nil
+}
+
+// updateLag atualiza a métrica de atraso da outbox.
+func (p *Publisher) updateLag(ctx context.Context) {
+	age, err := p.repository.OldestPendingAgeSeconds(ctx)
+	if err != nil {
+		return
+	}
+
+	metrics.OutboxLagSeconds.Set(age)
 }
 
 func (p *Publisher) retry(
@@ -149,6 +188,17 @@ func (p *Publisher) retry(
 	cause error,
 ) error {
 	delay := retryDelay(event.Attempts)
+
+	metrics.OutboxFailuresTotal.Inc()
+	slog.WarnContext(
+		ctx,
+		"outbox publish failed; retry scheduled",
+		"eventId", event.ID.String(),
+		"eventType", event.EventType,
+		"attempts", event.Attempts,
+		"retryIn", delay.String(),
+		"error", cause,
+	)
 
 	if err := p.repository.ScheduleRetry(ctx, event.ID, delay); err != nil {
 		return fmt.Errorf(

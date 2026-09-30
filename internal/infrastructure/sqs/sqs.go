@@ -13,9 +13,6 @@ import (
 )
 
 const (
-	QueueName      = "wager-transactions.fifo"
-	DLQName        = "wager-transactions-dlq.fifo"
-	EventQueueName = "wager-events.fifo"
 )
 
 type Client struct {
@@ -26,7 +23,7 @@ type Client struct {
 }
 
 func NewClient(ctx context.Context, cfg Config) (*Client, error) {
-	cfg, err := config.LoadDefaultConfig(
+	awsCfg, err := config.LoadDefaultConfig(
 		ctx,
 		config.WithRegion(cfg.Region),
 		config.WithCredentialsProvider(
@@ -41,7 +38,7 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("load AWS config: %w", err)
 	}
 
-	client := sqs.NewFromConfig(cfg, func(options *sqs.Options) {
+	client := sqs.NewFromConfig(awsCfg, func(options *sqs.Options) {
 		options.BaseEndpoint = aws.String(cfg.Endpoint)
 	})
 
@@ -49,7 +46,7 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, err
 	}
 
-	dlqURL, err := ensureQueue(ctx, client, DLQName, false, "")
+	dlqURL, err := ensureQueue(ctx, client, cfg.DLQName, false, "")
 	if err != nil {
 		return nil, fmt.Errorf("create DLQ: %w", err)
 	}
@@ -70,7 +67,7 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 	queueURL, err := ensureQueue(
 		ctx,
 		client,
-		QueueName,
+		cfg.QueueName,
 		true,
 		string(redrivePolicy),
 	)
@@ -81,7 +78,7 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 	eventQueueURL, err := ensureQueue(
 		ctx,
 		client,
-		EventQueueName,
+		cfg.EventQueueName,
 		true,
 		"",
 	)

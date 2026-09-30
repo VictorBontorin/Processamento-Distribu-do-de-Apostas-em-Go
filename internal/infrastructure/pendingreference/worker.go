@@ -2,6 +2,7 @@ package pendingreference
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -40,7 +41,9 @@ func (w *Worker) Start(ctx context.Context) {
 			if err := w.processBatch(ctx); err != nil {
 				// O worker não pode morrer por causa de uma única
 				// falha transitória.
-				_ = err
+				if ctx.Err() == nil {
+					slog.ErrorContext(ctx, "pending reference batch failed", "error", err)
+				}
 			}
 
 			select {
@@ -86,7 +89,12 @@ func (w *Worker) processBatch(ctx context.Context) error {
 		if err := w.store.ProcessPendingReference(ctx, tx); err != nil {
 			// A própria transação decide se a falha é terminal
 			// ou se deve permanecer pendente.
-			_ = err
+			slog.WarnContext(
+				ctx,
+				"pending reference processing failed",
+				"transactionId", tx.TransactionID.String(),
+				"error", err,
+			)
 		}
 	}
 

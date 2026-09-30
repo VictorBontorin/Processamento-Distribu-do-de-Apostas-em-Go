@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,9 @@ import (
 	"wager/internal/application"
 	"wager/internal/correlation"
 	"wager/internal/domain"
+	"wager/internal/fault"
+	"wager/internal/logging"
+	"wager/internal/metrics"
 
 	"go.uber.org/fx"
 )
@@ -179,20 +183,32 @@ func (c *Consumer) loop(ctx context.Context) {
 //     visibility timeout; esgotado MaxReceiveCount, o redrive do SQS a
 //     move para a DLQ.
 func (c *Consumer) handle(message Message) {
-	err := c.processMessage(c.workCtx, message)
+	ctx := logging.WithAttrs(
+		c.workCtx,
+		"sqsMessageId", message.ID,
+		"messageId", peekMessageID(message.Body),
+		"receiveCount", message.ReceiveCount,
+	)
+
+	err := c.processMessage(ctx, message)
 
 	switch {
 	case err == nil:
+		metrics.SQSMessagesTotal.WithLabelValues("processed").Inc()
+		// Ponto de injeção de falha dos testes: commit feito, mensagem
+		// ainda não removida.
+		fault.ExitIf("sqs_after_commit")
 		c.remove(message)
 
 	case errors.Is(err, application.ErrPermanent):
-		ctx, cancel := detached(5 * time.Second)
+		dlqCtx, cancel := detached(5 * time.Second)
 		defer cancel()
 
-		if dlqErr := c.client.SendToDLQ(ctx, message, err.Error()); dlqErr != nil {
+		if dlqErr := c.client.SendToDLQ(dlqCtx, message, err.Error()); dlqErr != nil {
 			slog.Error(
 				"SQS send to DLQ failed",
 				"sqsMessageId", message.ID,
+				"messageId", peekMessageID(message.Body),
 				"error", dlqErr,
 			)
 			c.backoff(message)
@@ -200,21 +216,36 @@ func (c *Consumer) handle(message Message) {
 			return
 		}
 
-		slog.Warn(
+		metrics.SQSMessagesTotal.WithLabelValues("dlq").Inc()
+		metrics.SQSDLQTotal.WithLabelValues("permanent").Inc()
+
+		slog.WarnContext(
+			ctx,
 			"SQS message sent to DLQ",
 			"sqsMessageId", message.ID,
+			"messageId", peekMessageID(message.Body),
 			"error", err,
 		)
 		c.remove(message)
 
 	case c.workCtx.Err() != nil:
 		// Encerramento forçado durante o processamento.
+		metrics.SQSMessagesTotal.WithLabelValues("released").Inc()
 		c.release(message)
 
 	default:
-		slog.Warn(
+		metrics.SQSMessagesTotal.WithLabelValues("retry").Inc()
+		metrics.SQSRetriesTotal.Inc()
+
+		if message.ReceiveCount >= MaxReceiveCount {
+			metrics.SQSDLQTotal.WithLabelValues("redrive_expected").Inc()
+		}
+
+		slog.WarnContext(
+			ctx,
 			"SQS message will be retried",
 			"sqsMessageId", message.ID,
+			"messageId", peekMessageID(message.Body),
 			"receiveCount", message.ReceiveCount,
 			"error", err,
 		)
@@ -230,6 +261,7 @@ func (c *Consumer) remove(message Message) {
 		slog.Error(
 			"SQS delete message failed",
 			"sqsMessageId", message.ID,
+			"messageId", peekMessageID(message.Body),
 			"error", err,
 		)
 	}
@@ -244,6 +276,7 @@ func (c *Consumer) release(message Message) {
 		slog.Error(
 			"SQS release message failed",
 			"sqsMessageId", message.ID,
+			"messageId", peekMessageID(message.Body),
 			"error", err,
 		)
 	}
@@ -259,6 +292,7 @@ func (c *Consumer) backoff(message Message) {
 		slog.Error(
 			"SQS change visibility failed",
 			"sqsMessageId", message.ID,
+			"messageId", peekMessageID(message.Body),
 			"error", err,
 		)
 	}
@@ -361,6 +395,12 @@ func (c *Consumer) processMessage(
 	}
 
 	ctx = correlation.WithID(ctx, domain.NewID())
+	ctx = logging.WithAttrs(
+		ctx,
+		"walletId", walletID.String(),
+		"providerId", data.ProviderID,
+		"externalTransactionId", data.ExternalTransactionID,
+	)
 
 	now := time.Now().UTC()
 
@@ -372,4 +412,18 @@ func (c *Consumer) processMessage(
 		transaction,
 		now,
 	)
+}
+
+// peekMessageID extrai o messageId do envelope para correlação de logs,
+// mesmo quando o restante da mensagem é inválido.
+func peekMessageID(body string) string {
+	var envelope struct {
+		MessageID string `json:"messageId"`
+	}
+
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
+		return ""
+	}
+
+	return envelope.MessageID
 }

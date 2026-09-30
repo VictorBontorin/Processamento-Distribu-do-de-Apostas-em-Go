@@ -4,20 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"wager/internal/application"
 	"wager/internal/domain"
+	"wager/internal/metrics"
 )
 
 type WagerStore struct {
-	uow *WagerUnitOfWork
+	uow        *WagerUnitOfWork
+	pendingTTL time.Duration
 }
 
-func NewWagerStore(uow *WagerUnitOfWork) *WagerStore {
-	return &WagerStore{uow: uow}
+func NewWagerStore(uow *WagerUnitOfWork, cfg StoreConfig) *WagerStore {
+	return &WagerStore{uow: uow, pendingTTL: cfg.PendingReferenceTTL}
 }
 
 type ProcessResult struct {
@@ -69,7 +72,7 @@ var ErrExternalTransactionConflict = fmt.Errorf(
 	application.ErrPermanent,
 )
 
-func (s *WagerStore) ProcessExternal(
+func (s *WagerStore) processExternal(
 	ctx context.Context,
 	txModel *domain.WagerTransaction,
 	now time.Time,
@@ -441,7 +444,10 @@ func (s *WagerStore) ProcessMessage(
 	txModel *domain.WagerTransaction,
 	now time.Time,
 ) error {
-	return s.uow.Run(ctx, func(r *WagerTransactionContext) error {
+	start := time.Now()
+	outcome := ""
+
+	err := s.uow.Run(ctx, func(r *WagerTransactionContext) error {
 		shouldProcess, err := r.Inbox.Register(
 			ctx,
 			consumerName,
@@ -454,6 +460,7 @@ func (s *WagerStore) ProcessMessage(
 		}
 
 		if !shouldProcess {
+			outcome = "duplicate_message"
 			return nil
 		}
 
@@ -475,8 +482,38 @@ func (s *WagerStore) ProcessMessage(
 			return err
 		}
 
+		// Ainda PENDING = a operação já existia (replay por outra origem).
+		if txModel.State() == domain.StatePending {
+			outcome = "duplicate_operation"
+		} else {
+			outcome = "handled"
+		}
+
 		return nil
 	})
+
+	metrics.ProcessingDuration.WithLabelValues("sqs").Observe(time.Since(start).Seconds())
+
+	if err != nil {
+		if isContentConflict(err) {
+			metrics.DuplicatesTotal.WithLabelValues("sqs", "conflict").Inc()
+		}
+
+		return err
+	}
+
+	switch outcome {
+	case "duplicate_message":
+		metrics.DuplicatesTotal.WithLabelValues("sqs", "duplicate_message").Inc()
+		slog.InfoContext(ctx, "SQS message already handled", "messageId", messageID)
+	case "duplicate_operation":
+		metrics.DuplicatesTotal.WithLabelValues("sqs", "replay").Inc()
+		slog.InfoContext(ctx, "SQS operation already handled", "messageId", messageID)
+	default:
+		recordHandled(ctx, "sqs", txModel, false)
+	}
+
+	return nil
 }
 
 func (s *WagerStore) processExternalTransaction(
@@ -1025,16 +1062,12 @@ func (s *WagerStore) processReversalInTransaction(
 }
 
 // Política de referências pendentes:
-//   - a operação espera até pendingReferenceTTL (5 min) pela referência;
+//   - a operação espera até PENDING_REFERENCE_TTL (padrão 5 min);
 //   - o worker tenta de novo com backoff exponencial (1s, 2s, 4s ... 60s);
 //   - expirado o TTL, a operação vira REJECTED com REFERENCE_NOT_FOUND
 //     (referência nunca apareceu) ou REFERENCE_NOT_PROCESSED (a
 //     referência existia, mas seguiu pendente até expirar).
-const (
-	pendingReferenceTTL        = 5 * time.Minute
-	pendingReferenceMaxBackoff = 60 * time.Second
-)
-
+//
 // waitForReference coloca a operação em PENDING_REFERENCE e agenda a
 // retomada durável pelo worker. Se ela já estiver esperando (retomada
 // pelo worker), mantém o estado sem repetir o evento.
@@ -1068,7 +1101,7 @@ func (s *WagerStore) waitForReference(
 		WHERE id = $1
 		`,
 		txModel.ID().String(),
-		pendingReferenceTTL.Seconds(),
+		s.pendingTTL.Seconds(),
 	); err != nil {
 		return fmt.Errorf("schedule pending reference: %w", err)
 	}
@@ -1419,7 +1452,9 @@ func (s *WagerStore) ProcessPendingReference(
 	ctx context.Context,
 	pending PendingReference,
 ) error {
-	return s.uow.Run(ctx, func(r *WagerTransactionContext) error {
+	outcome := ""
+
+	err := s.uow.Run(ctx, func(r *WagerTransactionContext) error {
 		// Trava a linha: outra instância não processa a mesma pendência
 		// ao mesmo tempo, e o estado lido aqui é o definitivo.
 		var (
@@ -1468,9 +1503,15 @@ func (s *WagerStore) ProcessPendingReference(
 		case errors.Is(err, pgx.ErrNoRows):
 			// Referência ainda não chegou.
 			if expired {
-				return s.rejectInTransaction(
+				if err := s.rejectInTransaction(
 					ctx, r, txModel, domain.CodeReferenceNotFound, now,
-				)
+				); err != nil {
+					return err
+				}
+
+				outcome = string(txModel.State())
+
+				return nil
 			}
 
 			return nil
@@ -1482,9 +1523,15 @@ func (s *WagerStore) ProcessPendingReference(
 			reference.State() == domain.StatePendingReference:
 			// Referência existe, mas ainda não terminou.
 			if expired {
-				return s.rejectInTransaction(
+				if err := s.rejectInTransaction(
 					ctx, r, txModel, domain.CodeReferenceNotProcessed, now,
-				)
+				); err != nil {
+					return err
+				}
+
+				outcome = string(txModel.State())
+
+				return nil
 			}
 
 			return nil
@@ -1492,6 +1539,27 @@ func (s *WagerStore) ProcessPendingReference(
 
 		// Referência resolvida (processada ou terminada sem sucesso):
 		// a lógica normal decide entre movimentar e rejeitar.
-		return s.processInTransaction(ctx, r, txModel, now)
+		if err := s.processInTransaction(ctx, r, txModel, now); err != nil {
+			return err
+		}
+
+		outcome = string(txModel.State())
+
+		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	if outcome != "" {
+		metrics.PendingReferenceTotal.WithLabelValues(outcome).Inc()
+		slog.InfoContext(
+			ctx,
+			"pending reference resolved",
+			"transactionId", pending.TransactionID.String(),
+			"outcome", outcome,
+		)
+	}
+
+	return nil
 }

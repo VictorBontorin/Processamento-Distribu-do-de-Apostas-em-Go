@@ -26,7 +26,7 @@ func (u *WagerUnitOfWork) Run(
 	ctx context.Context,
 	fn func(*WagerTransactionContext) error,
 ) error {
-	return u.uow.Run(ctx, func(tx pgx.Tx) error {
+	err := u.uow.Run(ctx, func(tx pgx.Tx) error {
 		txContext := &WagerTransactionContext{
 			Wallet:       NewWalletTxRepository(tx),
 			Transactions: NewWagerTransactionTxRepository(tx),
@@ -37,4 +37,8 @@ func (u *WagerUnitOfWork) Run(
 
 		return fn(txContext)
 	})
+
+	recordConflict(err)
+
+	return err
 }
