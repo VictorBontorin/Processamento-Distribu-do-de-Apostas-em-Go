@@ -84,16 +84,20 @@ roda como o serviço `migrate`, antes da API.
 **Estratégia: lock pessimista por carteira + atualização versionada + constraints.**
 
 1. A transação trava **apenas a linha da carteira** com
-   `SELECT ... FOR UPDATE`. Carteiras diferentes usam linhas diferentes e
-   avançam em paralelo; não há lock global nem advisory lock global.
+   `SELECT ... FOR UPDATE`, como **primeira** operação. Carteiras diferentes usam
+   linhas diferentes e avançam em paralelo; não há lock global nem advisory lock
+   global. A ordem importa: inserir em `wager_transactions`/`ledger_entries` toma,
+   pela chave estrangeira, um lock `FOR KEY SHARE` na carteira; duas transações
+   que inserissem antes de pedir `FOR UPDATE` entrariam em deadlock (`40P01`).
+   Travar a carteira primeiro as coloca apenas em fila.
 2. O saldo é alterado no agregado `Wallet` (débito rejeita saldo insuficiente) e
    persistido com `UPDATE ... SET balance, version = version + 1`, dentro da
    mesma transação. Como a linha está travada, não há *lost update*.
 3. Barreiras no banco, independentes da aplicação: `CHECK (balance >= 0)`,
    `UNIQUE (wallet_id, transaction_id)` no ledger, triggers de imutabilidade.
-4. Reversões travam também a linha da **transação referenciada** antes da
-   carteira (ordem fixa: referência → carteira), evitando deadlock entre
-   reversões concorrentes.
+4. Ordem fixa de locks em todos os caminhos (HTTP, SQS e worker de referências):
+   carteira → transação referenciada. Isso evita deadlock entre reversões
+   concorrentes e entre o worker e as requisições.
 
 Por que pessimista: a disputa por uma mesma carteira é o caso de uso
 crítico (duas apostas de 80 sobre 100). O lock serializa os escritores sem

@@ -1,3 +1,8 @@
+//go:build integration
+
+// Exige PostgreSQL com as migrations aplicadas (docker compose up -d postgres migrate).
+// Executar com: go test -tags=integration ./internal/infrastructure/postgres/
+
 package postgres
 
 import (
@@ -11,13 +16,7 @@ import (
 func TestWalletRepository_SaveAndGetByID(t *testing.T) {
 	ctx := context.Background()
 
-	cfg := Config{
-		Host:     "localhost",
-		Port:     "5432",
-		User:     "wager",
-		Password: "wager",
-		Database: "wager",
-	}
+	cfg := LoadConfig() // DB_* do ambiente; padrão: localhost/wager
 
 	pool, err := NewPool(ctx, cfg)
 	if err != nil {

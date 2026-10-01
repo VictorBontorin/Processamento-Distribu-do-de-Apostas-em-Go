@@ -80,6 +80,11 @@ func (s *WagerStore) processExternal(
 	var result ProcessResult
 
 	err := s.uow.Run(ctx, func(r *WagerTransactionContext) error {
+		// Ordem de locks: carteira primeiro (ver lockWallet).
+		if err := lockWallet(ctx, r, txModel.WalletID()); err != nil {
+			return err
+		}
+
 		/*
 			Primeiro verificamos se a Idempotency-Key já existe.
 
@@ -522,6 +527,11 @@ func (s *WagerStore) processExternalTransaction(
 	txModel *domain.WagerTransaction,
 	now time.Time,
 ) error {
+	// Ordem de locks: carteira primeiro (ver lockWallet).
+	if err := lockWallet(ctx, r, txModel.WalletID()); err != nil {
+		return err
+	}
+
 	/*
 		Primeiro verificamos a Idempotency-Key.
 	*/
@@ -1455,6 +1465,26 @@ func (s *WagerStore) ProcessPendingReference(
 	outcome := ""
 
 	err := s.uow.Run(ctx, func(r *WagerTransactionContext) error {
+		// Ordem de locks: carteira primeiro (ver lockWallet).
+		var rawWalletID string
+
+		if err := r.Wallet.tx.QueryRow(
+			ctx,
+			`SELECT wallet_id::text FROM wager_transactions WHERE id = $1`,
+			pending.TransactionID.String(),
+		).Scan(&rawWalletID); err != nil {
+			return fmt.Errorf("get pending reference wallet: %w", err)
+		}
+
+		walletID, err := domain.ParseID(rawWalletID)
+		if err != nil {
+			return err
+		}
+
+		if err := lockWallet(ctx, r, walletID); err != nil {
+			return err
+		}
+
 		// Trava a linha: outra instância não processa a mesma pendência
 		// ao mesmo tempo, e o estado lido aqui é o definitivo.
 		var (

@@ -148,3 +148,16 @@ func TestDuplicateWalletForPlayerAndCurrencyConflicts(t *testing.T) {
 		t.Fatalf("status=%d body=%s", r.status, r.raw)
 	}
 }
+
+func TestUnknownWalletReturnsNotFoundWithoutEffect(t *testing.T) {
+	req := newTx(newUUID(), newUUID(), "BET", "10.00")
+
+	r := postA(t, shared[0], req)
+	if r.status != http.StatusNotFound || r.str("code") != "WALLET_NOT_FOUND" {
+		t.Fatalf("status=%d body=%s", r.status, r.raw)
+	}
+
+	if n := count(t, env.pool, `SELECT count(*) FROM wager_transactions WHERE external_transaction_id = $1`, req.ext); n != 0 {
+		t.Fatalf("transaction created for an unknown wallet")
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -132,6 +133,9 @@ func run(m *testing.M) int {
 	defer os.RemoveAll(tmp)
 
 	env.binary = filepath.Join(tmp, "api")
+	if runtime.GOOS == "windows" {
+		env.binary += ".exe"
+	}
 
 	build := exec.Command("go", "build", "-o", env.binary, "./cmd/api")
 	build.Dir = root
@@ -426,7 +430,11 @@ func (i *instance) stop() {
 	default:
 	}
 
-	_ = i.cmd.Process.Signal(syscall.SIGTERM)
+	// Windows não suporta SIGTERM: nesse caso encerra à força.
+	if err := i.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		i.kill()
+		return
+	}
 
 	select {
 	case <-i.done:

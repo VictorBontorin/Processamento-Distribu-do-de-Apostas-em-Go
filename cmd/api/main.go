@@ -16,7 +16,11 @@ func main() {
 	fx.New(
 		app.Options(),
 		fx.WithLogger(func() fxevent.Logger {
-			return &fxevent.SlogLogger{Logger: slog.Default()}
+			// Eventos internos do Fx em debug (erros continuam em error).
+			logger := &fxevent.SlogLogger{Logger: slog.Default()}
+			logger.UseLogLevel(slog.LevelDebug)
+
+			return logger
 		}),
 	).Run()
 }

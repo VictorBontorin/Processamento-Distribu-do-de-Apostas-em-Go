@@ -239,6 +239,14 @@ func (h *WagerHandler) Create(
 				"external transaction already exists with different content",
 			)
 
+		case errors.Is(err, postgres.ErrWalletNotFound):
+			writeJSONErrorCode(
+				w,
+				http.StatusNotFound,
+				"WALLET_NOT_FOUND",
+				"wallet not found",
+			)
+
 		case isTransient(err):
 			// Nada foi confirmado: repetir com a mesma Idempotency-Key.
 			slog.WarnContext(ctx, "transient failure processing transaction", "error", err)

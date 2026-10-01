@@ -45,7 +45,7 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, err
 	}
 
-	dlqURL, err := ensureQueue(ctx, client, cfg.DLQName, false, "")
+	dlqURL, err := ensureQueue(ctx, client, cfg.DLQName, true, "")
 	if err != nil {
 		return nil, fmt.Errorf("create DLQ: %w", err)
 	}

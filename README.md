@@ -169,6 +169,17 @@ gofmt -l .               # deve listar nada
 
 ### Integração, múltiplas instâncias e falhas
 
+Sem `make` (por exemplo, PowerShell no Windows), use os comandos diretos:
+
+```powershell
+docker compose up -d postgres localstack keycloak   # aguarde ~1 min pelo Keycloak
+go vet -tags=integration ./...
+go test -tags=integration -count=1 -timeout=20m ./test/integration/...
+```
+
+`-race` exige CGO e um compilador C; se não tiver, omita-o. No Windows o
+SIGTERM não existe, então os processos de teste são encerrados à força.
+
 Os testes de integração usam PostgreSQL, LocalStack e Keycloak reais, sem
 mocks, e ficam atrás da build tag `integration`.
 
@@ -200,6 +211,11 @@ Simulação de falhas: com `FAULT_EXIT_AT=sqs_after_commit` ou
 indicado (`internal/fault`). Usado apenas pelos testes; não defina em produção.
 
 O grafo do Fx também é validado sem infraestrutura por `internal/app/app_test.go`.
+
+O teste do repositório de carteiras (`internal/infrastructure/postgres`) também está
+atrás da tag `integration` e exige PostgreSQL com as migrations:
+`docker compose up -d postgres migrate` e depois
+`go test -tags=integration ./internal/infrastructure/postgres/`.
 
 ## Estrutura
 

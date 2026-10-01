@@ -7,7 +7,9 @@ import (
 )
 
 func TestHandlerExposesApplicationMetrics(t *testing.T) {
+	// Métricas com rótulos só aparecem depois de observadas.
 	TransactionsTotal.WithLabelValues("http", "BET", "PROCESSED").Inc()
+	DuplicatesTotal.WithLabelValues("http", "replay").Inc()
 	ReconciliationDivergences.Inc()
 
 	rec := httptest.NewRecorder()
