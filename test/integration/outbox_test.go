@@ -165,7 +165,7 @@ func TestOutboxCrashBetweenPublishAndMarkIsRecovered(t *testing.T) {
 
 	if !faulty.waitExit(60 * time.Second) {
 		t.Fatal("faulty publisher did not exit after publishing")
-	}
+	}	
 
 	if n := count(t, pool, `SELECT count(*) FROM outbox_events WHERE published_at IS NULL`); n == 0 {
 		t.Fatal("expected unpublished events left by the crashed publisher")
